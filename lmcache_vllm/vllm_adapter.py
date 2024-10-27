@@ -274,18 +274,9 @@ def lmcache_should_retrieve(
             assert len(seq_lens) == 1
             return RetrieveStatus.CHUNK_PREFILL
         
-        '''
-        # Check whether the current prefill chunk is the last one
-        key = list(model_input.sampling_metadata.seq_groups[0].seq_data.keys())[0]
-        seq_data = model_input.sampling_metadata.seq_groups[0].seq_data[key]
-        prompt_tokens = seq_data.prompt_token_ids
-        if model_input.seq_lens[0] != len(prompt_tokens):
-            #TODO(Jiayi): We should support this as well
-            return RetrieveStatus.CHUNK_PREFILL_LAST
-        '''
-        return RetrieveStatus.PREFILL
-
-    # for disaggregated prefilling: allow bypassing model execution
+        # `<` means chunked prefill is batched with decode
+        if len(selected_token_indices) == len(seq_lens):
+            return RetrieveStatus.PREFILL
 
     return RetrieveStatus.NONE
 
@@ -349,22 +340,26 @@ def lmcache_should_store(
 
     if is_all_prefill_run:
         selected_token_indices = model_input.sampling_metadata.selected_token_indices
-        if len(selected_token_indices) == 0:
-            # There should only be 1 chunk in chunked prefill
-            assert len(seq_lens) == 1
-            return [StoreStatus.CHUNK_PREFILL]
-        
         seq_group_metadata_list = model_input.seq_group_metadata_list
-        idx = 0
+        seq_data_idx = 0
+        selected_token_indices_idx = 0
         for seq_group_idx, seq_group_metadata in enumerate(seq_group_metadata_list):
+            
+            # TODO(Jiayi): Figure out scenarios (other than chunk prefill) 
+            # where `do_sample`` is False 
+            if not seq_group_metadata.do_sample:
+                store_status[seq_data_idx] = StoreStatus.CHUNK_PREFILL
+                seq_data_idx += 1 
+                continue
             for seqid, seq_data in seq_group_metadata.seq_data.items():
-                if seq_data.get_len()-1 != selected_token_indices[idx]:
+                if seq_data.get_len()-1 != selected_token_indices[selected_token_indices_idx]:
                     # last chunk in chunk prefill
                     # or prefix already hit in retrieve
-                    store_status[idx] = StoreStatus.SUFFIX_PREFILL
+                    store_status[seq_data_idx] = StoreStatus.SUFFIX_PREFILL
                 else:
-                    store_status[idx] = StoreStatus.PREFILL
-                idx += 1
+                    store_status[seq_data_idx] = StoreStatus.PREFILL
+                seq_data_idx += 1
+                selected_token_indices_idx += 1
         return store_status
         
 
