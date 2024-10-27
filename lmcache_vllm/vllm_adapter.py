@@ -351,6 +351,7 @@ def lmcache_should_store(
                 store_status[seq_data_idx] = StoreStatus.CHUNK_PREFILL
                 seq_data_idx += 1 
                 continue
+            
             for seqid, seq_data in seq_group_metadata.seq_data.items():
                 if seq_data.get_len()-1 != selected_token_indices[selected_token_indices_idx]:
                     # last chunk in chunk prefill
