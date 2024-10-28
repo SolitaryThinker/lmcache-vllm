@@ -47,7 +47,6 @@ def new_execute_model(
         logger.info(f"KV cache retrieving mode: {retrieve_status}")
         model_input, is_skip = lmcache_retrieve_kv(
             self.model, self.model_config.model, model_input, kv_caches, retrieve_status)
-
         if is_skip:
             logger.debug("Prefill is entirely skipped")
             
