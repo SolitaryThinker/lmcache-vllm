@@ -421,9 +421,9 @@ def lmcache_store_kv(
         for seqid, seq_data in seq_group_metadata.seq_data.items():
             status = store_status[seq_data_idx]
             # TODO (Jiayi): can chunk prefill and vllm prefix caching use the same logic?
-            if status in [StoreStatus.NONE, StoreStatus.CHUNK_PREFILL]:
+            if status in [StoreStatus.NONE]:
                 continue
-            elif status in [StoreStatus.SUFFIX_PREFILL]:
+            elif status in [StoreStatus.SUFFIX_PREFILL, StoreStatus.CHUNK_PREFILL]:
                 seq_len = seq_lens[seq_data_idx]
             else:
                 seq_len = seq_data.get_len()
