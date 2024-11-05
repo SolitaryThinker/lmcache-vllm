@@ -12,15 +12,26 @@ from vllm.multimodal import MultiModalInputs
 from vllm.lora.request import LoRARequest
 from vllm.worker.model_runner_base import dump_input_when_exception
 from vllm.distributed import get_pp_group
+from vllm import _custom_ops as ops
 
 from lmcache_vllm.vllm_adapter import (lmcache_get_config,
         init_lmcache_engine, lmcache_should_store, lmcache_should_retrieve,
         lmcache_store_kv, lmcache_retrieve_kv, close_lmcache_engine,
+        create_model_input_subset,
         broadcast_seq_group_metadata, StoreStatus, RetrieveStatus,
         SUPPORTED_MODELS)
 
+from lmcache_vllm.scheduler_adapter import (_new_schedule_running, new_schedule, _new_schedule_default,
+                                            new_scheduler__init__)
+from lmcache_vllm.worker_base_adapter import new_worker_base_execute_model
+from lmcache_vllm.llm_engine_adapter import new_step
+from lmcache_vllm.gpu_executor_adapter import new_gpu_executor_execute_model
+from lmcache_vllm.sequence_adapter import (NewSequenceData)
+
 from lmcache_vllm.models.llama import inject_llama
 from lmcache_vllm.attention.flash_attn import inject_flash_attn
+
+from lmcache_vllm.compactor import DropMidCompactor, CompactorInput, CompactorOutput
 
 from lmcache.logging import init_logger
 logger = init_logger(__name__)
@@ -32,6 +43,7 @@ def new_execute_model(
     model_input,
     kv_caches,
     intermediate_tensors,
+    compactor_input = None,
     num_steps: int = 1,
 ): 
     init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
@@ -40,13 +52,53 @@ def new_execute_model(
     # execution. Maybe there's a more efficient way.
     model_input = broadcast_seq_group_metadata(model_input, self.is_driver_worker)
     
+    model_input_subset = create_model_input_subset(
+        self.model_config.model, self.model)
+    
+    # TODO (Jiayi): move this in a separate function
+    # LMCache memory compaction (move kv cache)
+    kv_mmaps = []
+    if compactor_input is not None:
+        kv_mmaps = compactor_input.kv_mmaps
+    attn_layers = model_input_subset.attn_layers
+    start_layer = model_input_subset.start_layer
+    end_layer = model_input_subset.end_layer
+    for kv_mmap in kv_mmaps:
+        
+        src_slot_mapping = kv_mmap[0]
+        dst_slot_mapping = torch.tensor(kv_mmap[1])
+        
+        
+        # TODO(Jiayi): optimize the following code into a cuda kernel?
+        # or at least into a separate function
+        for i in range(start_layer, end_layer):
+            layer_idx = i - start_layer
+            kv_cache = kv_caches[layer_idx]
+            attn_layer = attn_layers[i]
+            key_cache, value_cache = kv_cache[0], kv_cache[1]
+            _, _, num_heads, head_size = kv_cache[0].shape
+            key_cache_temp = kv_cache[0].reshape(-1, num_heads, head_size)
+            value_cache_temp = kv_cache[1].reshape(-1, num_heads, head_size)
+            dst_slot_mapping = dst_slot_mapping.to(kv_cache[0].device)
+            ops.reshape_and_cache_flash(
+                key_cache_temp[src_slot_mapping],
+                value_cache_temp[src_slot_mapping],
+                key_cache,
+                value_cache,
+                dst_slot_mapping,
+                attn_layer.attn.kv_cache_dtype,
+                attn_layer.attn._k_scale,
+                attn_layer.attn._v_scale,
+            )
+    
     # LMCache retrieval
     retrieve_status = lmcache_should_retrieve(model_input, kv_caches)
     is_skip = False
     if retrieve_status != RetrieveStatus.NONE:
         logger.info(f"KV cache retrieving mode: {retrieve_status}")
         model_input, is_skip = lmcache_retrieve_kv(
-            self.model, self.model_config.model, model_input, kv_caches, retrieve_status)
+            self.model, model_input, 
+            model_input_subset, kv_caches, retrieve_status)
         if is_skip:
             logger.debug("Prefill is entirely skipped")
             
@@ -205,8 +257,32 @@ def new_execute_model(
             hidden_states = hidden_or_intermediate_states
  
         output.hidden_states = hidden_states
- 
-    return [output]
+
+    # TODO(Jiayi): move the following part to a function
+    # Compute compactor output
+    seq_group_metadata_list = model_input.seq_group_metadata_list
+    compacted_indices_dict = {}
+    for seq_group_metadata in seq_group_metadata_list:
+        request_id = seq_group_metadata.request_id
+        seq_ids = model_input.request_ids_to_seq_ids[request_id]
+        for seq_id in seq_ids:
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            # FIXME(Jiayi): find a way to keep the original ids
+            # and differentiate original/compacted ids
+            total_seq_len = seq_data.get_len()
+            
+            # TODO(Jiayi): make it more elegant
+            if total_seq_len % 256 == 0:
+                logger.debug("[Compactor] calling compactor")
+                # TODO(Jiayi): compactor init should only be done once
+                compactor = DropMidCompactor()
+                org_indices = [i for i in range(total_seq_len)] 
+                compacted_indices = compactor.compute_indices(org_indices)
+                compacted_indices_dict[seq_id] = compacted_indices
+    compactor_output = CompactorOutput(
+        compacted_indices_dict=compacted_indices_dict,)
+    
+    return [output], compactor_output
 
 def _patch_padding_space(
     tokenizer_id: str,
@@ -332,6 +408,32 @@ def InitLMCacheEnvironment() -> None:
     import vllm
     vllm.inputs.preprocess.InputPreprocessor._tokenize_prompt = _new_tokenize_prompt
     vllm.inputs.preprocess.InputPreprocessor._tokenize_prompt_async = _new_tokenize_prompt_async
+    
+    # inject scheduler
+    import vllm.core.scheduler
+    vllm.core.scheduler.Scheduler._schedule_running = _new_schedule_running
+    vllm.core.scheduler.Scheduler._schedule_default = _new_schedule_default
+    vllm.core.scheduler.Scheduler.schedule = new_schedule
+    vllm.core.scheduler.Scheduler.__init__ = new_scheduler__init__
+    
+    # inject llm_engine
+    import vllm.engine.llm_engine
+    vllm.engine.llm_engine.LLMEngine.step = new_step
+    
+    # inject gpu_executor
+    import vllm.executor.gpu_executor
+    vllm.executor.gpu_executor.GPUExecutor.execute_model = new_gpu_executor_execute_model
+    
+    # inject worker_base
+    import vllm.worker.worker_base
+    vllm.worker.worker_base.LocalOrDistributedWorkerBase.execute_model = new_worker_base_execute_model
+    
+    # inject vllm sequence
+    import vllm.sequence
+    #vllm.sequence.Sequence.__init__ = new_sequence__init__
+    #vllm.sequence.SequenceData.append_token_id = new_sequencedata_append_token_id
+    #vllm.sequence.SequenceData.get_len = new_sequencedata_get_len
+    vllm.sequence.SequenceData = NewSequenceData
     
     # Cacheblend
     if lmcache_get_config().enable_blending:

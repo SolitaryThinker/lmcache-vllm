@@ -470,8 +470,8 @@ def lmcache_store_kv(
 @_lmcache_nvtx_annotate
 def lmcache_retrieve_kv(
     model_executable,
-    model_name: str,
     model_input: "ModelInputForGPUWithSamplingMetadata",
+    model_input_subset,
     kv_caches: List[torch.Tensor],
     retrieve_status: RetrieveStatus,
 ) -> Tuple["ModelInputForGPUWithSamplingMetadata", bool]:
@@ -501,8 +501,6 @@ def lmcache_retrieve_kv(
     seq_lens = model_input.attn_metadata.seq_lens
 
 
-    model_input_subset = create_model_input_subset(
-        model_name, model_executable)
     attn_layers = model_input_subset.attn_layers
     start_layer = model_input_subset.start_layer
     end_layer = model_input_subset.end_layer
