@@ -68,6 +68,9 @@ def new_execute_model(
         src_slot_mapping = kv_mmap[0]
         dst_slot_mapping = torch.tensor(kv_mmap[1])
         
+        # TODO(Jiayi): Figure out why there are pending 0s in block_tabbls
+        # Might be related to cuda graph & max batch_size
+        # https://github.com/vllm-project/vllm/blob/ad23318928d40ef7ac969451afa0dc198428c04b/vllm/attention/backends/flash_attn.py#L370
         
         # TODO(Jiayi): optimize the following code into a cuda kernel?
         # or at least into a separate function
@@ -90,7 +93,7 @@ def new_execute_model(
                 attn_layer.attn._k_scale,
                 attn_layer.attn._v_scale,
             )
-    
+
     # LMCache retrieval
     retrieve_status = lmcache_should_retrieve(model_input, kv_caches)
     is_skip = False

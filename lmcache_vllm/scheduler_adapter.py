@@ -221,6 +221,9 @@ def _renew_slots(
         # Construct compactor input
         kv_mmaps.append([org_slot_mapping, compacted_slot_mapping])
 
+        import pdb
+        pdb.set_trace()
+        
     # Construct & return compactor input
     return kv_mmaps
 
