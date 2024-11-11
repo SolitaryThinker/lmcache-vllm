@@ -30,6 +30,7 @@ from lmcache_vllm.sequence_adapter import (NewSequenceData)
 
 from lmcache_vllm.models.llama import inject_llama
 from lmcache_vllm.attention.flash_attn import inject_flash_attn
+from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
 
 from lmcache_vllm.compactor import DropMidCompactor, CompactorInput, CompactorOutput
 
@@ -437,6 +438,9 @@ def InitLMCacheEnvironment() -> None:
     #vllm.sequence.SequenceData.append_token_id = new_sequencedata_append_token_id
     #vllm.sequence.SequenceData.get_len = new_sequencedata_get_len
     vllm.sequence.SequenceData = NewSequenceData
+    
+    # inject flash attention
+    inject_flash_attn_compact()
     
     # Cacheblend
     if lmcache_get_config().enable_blending:
