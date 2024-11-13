@@ -9,15 +9,28 @@ from lmcache.blend.interfaces import BlendRetrieverTask, BlendExecutor
 from lmcache.logging import init_logger
 
 from vllm.attention import AttentionMetadata
-
-from lmcache_vllm.vllm_adapter import ENGINE_NAME
+from vllm.sequence import SequenceGroupMetadata
+from lmcache_vllm.lmcache_utils import ENGINE_NAME
 
 logger = init_logger(__name__)
 
-# TODO: need to load the special token and recompute ratio from configuration
-TEMP_SPT = torch.tensor([422, 422], dtype = torch.int, device = "cpu")
-RECOMP_RATIO = 0.15
-MINIMUM_TOKENS_TO_ENABLE_BLENDING = 256
+class ReqId2Indices:
+    """The class for cacheblend indices.
+    Map request_id to indices to split the prompt.
+    """
+    def __init__(self):
+        self._map_dict = {}
+    def add_request(self, request_id, indices):
+        self._map_dict[request_id] = indices
+    def get_request(self, request_id):
+        return self._map_dict.get(request_id, None)
+    def delete_request(self, request_id):
+        self._map_dict.pop(request_id, None)
+    
+global_req_id2indices = ReqId2Indices()
+
+# TODO: Special token text and token_id should depend on models.
+TEMP_SPT = [422, 422]
 global_blend_retriever = None
 g_manually_disabled = False
 
@@ -51,6 +64,8 @@ class BlendMetadata:
     positions: torch.Tensor
     retrieval_task: BlendRetrieverTask
     blend_executor: BlendExecutor
+    request_prompt_list: List[torch.Tensor]
+    prompt_indices_list: List[List[int]]
     selected_token_indices: torch.Tensor
     original_query_start_loc: torch.Tensor
 
@@ -76,6 +91,40 @@ def init_cacheblend_retriever():
 
 
 # MAIN FUNCTIONS
+
+def drop_blend_spt(request_id, prompt: List[int]) -> List[int]:
+    """Drop the SPT tokens from the prompt and return the new prompt.
+    Also stores the indices for later retrieval.
+    :param request_id: The request id in sequence group.
+
+    :param prompt: The input prompt after tokenization.
+    :type prompt: List[int]
+
+    :return: The new prompt after dropping the SPT tokens.
+    :rtype: List[int]
+    """
+    if global_blend_retriever is None:
+        init_cacheblend_retriever()
+    new_prompt, indices = global_blend_retriever.drop_spt_and_get_indices(prompt)
+    global_req_id2indices.add_request(request_id, indices)
+    return new_prompt
+
+def get_blend_indices(request_id) -> List[int]:
+    """Get the indices after split for the request id.
+    :param request_id: The request id in sequence group.
+
+    :return: The indices for the request id.
+    :rtype: List[int]
+    """
+    indices = global_req_id2indices.get_request(request_id)
+    return indices if indices is not None else []
+
+def remove_request_id_indices(request_id):
+    """Remove stored indices of request id.
+    Called when a sequence group is finished.
+    :param request_id: The request id in sequence group.
+    """
+    global_req_id2indices.delete_request(request_id)
 
 def combine_input_prompt_chunks(
         prompt_chunks: List[str],
@@ -125,7 +174,8 @@ def should_process_request(
     if is_profile_run:
         return False
 
-    # TODO: make this "256" be configurable
+    cache_engine = LMCacheEngineBuilder.get(ENGINE_NAME)
+    MINIMUM_TOKENS_TO_ENABLE_BLENDING = cache_engine.config.blend_min_tokens
     if len(input_ids) < MINIMUM_TOKENS_TO_ENABLE_BLENDING:
         return False
 
@@ -145,10 +195,11 @@ def process_new_request(
     """Creates the cacheblend related stuff and put that into the attn metadata
     """
     if not should_process_request(input_ids, attn_metadata, kv_caches):
+        if hasattr(attn_metadata, "blend_metadata"):
+            delattr(attn_metadata, "blend_metadata")
         return attn_metadata
-
     cache_engine = LMCacheEngineBuilder.get(ENGINE_NAME)
-
+    
     if cache_engine is None:
         logger.error("Cannot initialize cache blend logic because LMCacheEngine is not initialized")
         raise RuntimeError("Cannot initialize cache blend logic because LMCacheEngine is not initialized")
@@ -156,12 +207,47 @@ def process_new_request(
     global global_blend_retriever
     if global_blend_retriever is None:
         init_cacheblend_retriever()
-    task = global_blend_retriever.new_request(input_ids.cpu(), attn_metadata.query_start_loc)
-
+    
+    assert hasattr(attn_metadata, "blend_metadata")
+    task = global_blend_retriever.new_request(
+        attn_metadata.blend_metadata.request_prompt_list, 
+        attn_metadata.blend_metadata.prompt_indices_list
+    )
+    RECOMP_RATIO = cache_engine.config.blend_recompute_ratio
     executor = CacheBlendImpl(RECOMP_RATIO)
-    blend_metadata = BlendMetadata(0, positions, task, executor, None, None)
-    setattr(attn_metadata, "blend_metadata", blend_metadata)
+    attn_metadata.blend_metadata.positions = positions
+    attn_metadata.blend_metadata.retrieval_task = task
+    attn_metadata.blend_metadata.blend_executor = executor
     return attn_metadata
+
+def attach_blend_prompt_indices(
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        attn_metadata: AttentionMetadata,
+    ):
+    """Attach the prompts and indices after split to blend_metadata in attn_metadata.
+    :param seq_group_metadata_list: The list of sequence group metadata.
+    :type seq_group_metadata_list: List[SequenceGroupMetadata]
+
+    :param attn_metadata: The attention metadata.
+    :type attn_metadata: AttentionMetadata
+    """
+    assert not hasattr(attn_metadata, "blend_metadata")
+    blend_metadata = BlendMetadata(0, None, None, None, [], [], None, None)
+    setattr(attn_metadata, "blend_metadata", blend_metadata)
+    seq_lens = attn_metadata.seq_lens
+    seq_data_idx = 0
+    for seq_group_metadata in seq_group_metadata_list:
+        for seqid, seq_data in seq_group_metadata.seq_data.items():
+            seq_len = seq_lens[seq_data_idx]
+            if seq_group_metadata.block_tables is not None:
+                indices = get_blend_indices(seq_group_metadata.request_id)
+            else:
+                indices = []
+            attn_metadata.blend_metadata.request_prompt_list.append(torch.tensor(
+                seq_data.get_token_ids()[:seq_len], device="cpu"))
+            attn_metadata.blend_metadata.prompt_indices_list.append(indices)
+            seq_data_idx += 1
+    assert seq_data_idx == len(seq_lens)
 
 
 def do_blend(

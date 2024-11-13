@@ -23,11 +23,12 @@ from lmcache.logging import init_logger
 from lmcache.cache_engine import LMCacheEngine, LMCacheEngineBuilder
 from lmcache.config import LMCacheEngineConfig, LMCacheEngineMetadata
 from lmcache.utils import _lmcache_nvtx_annotate
-
+from lmcache_vllm.lmcache_utils import ENGINE_NAME
+from lmcache_vllm.blend_adapter import drop_blend_spt, remove_request_id_indices
 
 logger = init_logger(__name__)
 
-ENGINE_NAME = "vllm-instance"
+
 LMCACHE_CUDA_STREAM = torch.cuda.Stream()
 
 class StoreStatus(Enum):
@@ -125,6 +126,20 @@ def lmcache_get_config() -> LMCacheEngineConfig:
     lmcache_get_config.cached_config = config
     return config
 
+def lmcache_blend_drop_spt(request_id, prompt: List[int]) -> List[int]:
+    engine = LMCacheEngineBuilder.get(ENGINE_NAME)
+    assert engine is not None
+    assert engine.config.enable_blending
+    return drop_blend_spt(request_id, prompt)
+
+def lmcache_remove_request_id_indices(request_id):
+    engine = LMCacheEngineBuilder.get(ENGINE_NAME)
+    if engine is None:
+        return
+    if not engine.config.enable_blending:
+        return
+    remove_request_id_indices(request_id)
+    
 
 def init_lmcache_engine(
         model_config: ModelConfig,
@@ -161,6 +176,8 @@ def init_lmcache_engine(
     head_size = model_config.get_head_size()
     kv_shape = (num_layer, 2, chunk_size, num_kv_head, head_size)
     
+    # Change current device.
+    torch.cuda.device(parallel_config.rank)
     metadata = LMCacheEngineMetadata(
             model_config.model,
             parallel_config.world_size,
@@ -756,4 +773,3 @@ def build_partial_prefill_input(
     )
 
     return rebuilt_model_input
-
