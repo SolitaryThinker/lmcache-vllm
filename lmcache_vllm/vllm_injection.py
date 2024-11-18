@@ -48,6 +48,9 @@ def new_execute_model(
     num_steps: int = 1,
 ): 
     init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
+    
+    # FIXME (Jiayi): please implement
+    lmcache_compactor = init_or_get_lmcache_compactor()
 
     # TODO(Jiayi): broadcast the necessary `seq_group_metadata` in every model
     # execution. Maybe there's a more efficient way.
@@ -58,42 +61,12 @@ def new_execute_model(
     
     # TODO (Jiayi): move this in a separate function
     # LMCache memory compaction (move kv cache)
-    kv_mmaps = []
     if compactor_input is not None:
-        kv_mmaps = compactor_input.kv_mmaps
-    attn_layers = model_input_subset.attn_layers
-    start_layer = model_input_subset.start_layer
-    end_layer = model_input_subset.end_layer
-    for kv_mmap in kv_mmaps:
-        
-        src_slot_mapping = kv_mmap[0]
-        dst_slot_mapping = torch.tensor(kv_mmap[1])
-        
-        # TODO(Jiayi): Figure out why there are pending 0s in block_tabbls
-        # Might be related to cuda graph & max batch_size
-        # https://github.com/vllm-project/vllm/blob/ad23318928d40ef7ac969451afa0dc198428c04b/vllm/attention/backends/flash_attn.py#L370
-        
-        # TODO(Jiayi): optimize the following code into a cuda kernel?
-        # or at least into a separate function
-        for i in range(start_layer, end_layer):
-            layer_idx = i - start_layer
-            kv_cache = kv_caches[layer_idx]
-            attn_layer = attn_layers[i]
-            key_cache, value_cache = kv_cache[0], kv_cache[1]
-            _, _, num_heads, head_size = kv_cache[0].shape
-            key_cache_temp = kv_cache[0].reshape(-1, num_heads, head_size)
-            value_cache_temp = kv_cache[1].reshape(-1, num_heads, head_size)
-            dst_slot_mapping = dst_slot_mapping.to(kv_cache[0].device)
-            ops.reshape_and_cache_flash(
-                key_cache_temp[src_slot_mapping],
-                value_cache_temp[src_slot_mapping],
-                key_cache,
-                value_cache,
-                dst_slot_mapping,
-                attn_layer.attn.kv_cache_dtype,
-                attn_layer.attn._k_scale,
-                attn_layer.attn._v_scale,
-            )
+        lmcache_compactor.compact_memory(
+            model_input_subset,
+            kv_caches,
+            compactor_input.dst_slot_mappings)
+    
 
     # LMCache retrieval
     retrieve_status = lmcache_should_retrieve(model_input, kv_caches)
@@ -262,29 +235,9 @@ def new_execute_model(
  
         output.hidden_states = hidden_states
 
-    # TODO(Jiayi): move the following part to a function
-    # Compute compactor output
-    seq_group_metadata_list = model_input.seq_group_metadata_list
-    compacted_indices_dict = {}
-    for seq_group_metadata in seq_group_metadata_list:
-        request_id = seq_group_metadata.request_id
-        seq_ids = model_input.request_ids_to_seq_ids[request_id]
-        for seq_id in seq_ids:
-            seq_data = seq_group_metadata.seq_data[seq_id]
-            # FIXME(Jiayi): find a way to keep the original ids
-            # and differentiate original/compacted ids
-            total_seq_len = seq_data.get_len()
-            
-            # TODO(Jiayi): make it more elegant
-            if total_seq_len % 256 == 0:
-                logger.debug("[Compactor] calling compactor")
-                # TODO(Jiayi): compactor init should only be done once
-                compactor = DropMidCompactor()
-                org_indices = [i for i in range(total_seq_len)] 
-                compacted_indices = compactor.compute_indices(org_indices)
-                compacted_indices_dict[seq_id] = compacted_indices
-    compactor_output = CompactorOutput(
-        compacted_indices_dict=compacted_indices_dict,)
+    
+    # lmcache_compactor post model actions
+    compactor_output = lmcache_compactor(model_input, seq_group_metadata_list)
     
     return [output], compactor_output
 

@@ -1,17 +1,6 @@
 import abc
 from typing import Tuple, List, Dict
-    
-class BaseCompactor(metaclass=abc.ABCMeta):
-    """
-    Interface for scheduler compactor
-    """
-    
-    @abc.abstractmethod
-    def compute_indices(self, token_indices):
-        """
-        
-        """
-        raise NotImplementedError
+
 
 
 class DropMidCompactor(BaseCompactor):
