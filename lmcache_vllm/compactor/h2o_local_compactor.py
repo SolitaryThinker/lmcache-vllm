@@ -31,6 +31,8 @@ class H2OCompactor(BaseLocalCompactor):
         
         # TODO: remove this hardcode
         self.num_layers = 32
+        self.num_heads = 32
+        self.device = "cuda"
     
     def update_imp_scores_buffer(
         self,
@@ -49,7 +51,22 @@ class H2OCompactor(BaseLocalCompactor):
         for layer_idx in range(self.num_layers):
             self.imp_scores[seq_id][num_layer,:,:seq_len] += chunked_attetnion_weight
         
-            
+    def allocate_imp_scores(
+        self,
+        model_input,
+    ):
+        seq_group_metadata_list = model_input.seq_group_metadata_list
+        for seq_group_metadata in seq_group_metadata_list:
+            request_id = seq_group_metadata.request_id
+            seq_ids = model_input.request_ids_to_seq_ids[request_id]
+            for seq_id in seq_ids:
+                if seq_id in self.imp_scores:
+                    continue
+                imp_scores_temp = torch.zeros(
+                    (self.num_heads, self.max_window_size),
+                    device=self.device,
+                    dtype=torch.float32)
+                self.imp_scores[seq_id] = imp_scores_temp
 
     def compact_memory(
         self,
@@ -95,6 +112,7 @@ class H2OCompactor(BaseLocalCompactor):
             # pop src_slot_mapping to reduce memory usage
             self.src_slot_mappings.pop(seq_id)
     
+    
     def compute_inidces(
         self,
         seq_id,
@@ -124,13 +142,13 @@ class H2OCompactor(BaseLocalCompactor):
             
     def post_model_update(
         self,
-        model_input,
-        seq_group_metadata_list):
+        model_input):
         """
         1. update imp_scores
         2. Conditionally compute indices for schedulers
         3. Conditionally update src_slot_mapping
         """
+        seq_group_metadata_list = model_input.seq_group_metadata_list
         seq_lens = model_input.attn_metadata.seq_lens
         chunked_attetnion_weights = torch.split(
             self.buffer_attn_weights, seq_lens, dim=2)

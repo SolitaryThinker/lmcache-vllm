@@ -139,6 +139,8 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
             execute_model_req=execute_model_req,
             compactor_input=compactor_input)
         self.scheduler[virtual_engine].compactor_output = compactor_output
+        import pdb
+        pdb.set_trace()
         # Jiayi Modification ends
         
         

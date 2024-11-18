@@ -26,4 +26,5 @@ class CompactorInput:
 @dataclass
 class CompactorOutput:
     compacted_indices_dict: Dict[int, List[List[int]]]
+    end_seq_ids: List[int]
 

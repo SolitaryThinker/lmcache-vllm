@@ -15,7 +15,7 @@ from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.attention.backends.utils import compute_slot_mapping
 from vllm.utils import Device, PyObjectCache
 
-from lmcache_vllm.compactor import DropMidCompactor, CompactorInput, CompactorOutput
+from lmcache_vllm.compactor import BaseSchedulerCompactor, CompactorInput, CompactorOutput
 import time
 from collections import deque
 import os
@@ -131,124 +131,11 @@ def new_scheduler__init__(
 
     # Jiayi Modification starts
     self.compactor_output = CompactorOutput(
-        compacted_indices_dict={},)
+        compacted_indices_dict={},
+        end_seq_ids=[],)
     # Jiayi Modification ends
 
 
-def _renew_slots(
-    self,
-    seq_group: SequenceGroup,
-):
-    kv_mmaps = []
-    compacted_indices_dict = self.compactor_output.compacted_indices_dict
-    for seq in seq_group.get_seqs():
-        seq_id = seq.seq_id
-        # Check whether the current seq_id needs to be compacted
-        if seq_id not in compacted_indices_dict:
-            continue
-        
-        # Get block tables
-        # NOTE: block table object is under vllm.block
-        # not in vllm.core
-        block_table = self.block_manager.block_tables[seq.seq_id]
-        org_block_table_dict = {seq.seq_id: block_table._block_ids}
-
-        # Construct original slot mapping
-        org_slot_mapping = []
-        skip_leading_tokens = 0
-        vllm_block_size = 16
-        # `-1` ignore newly generated token for now
-        seq_len = seq.get_len() - 1
-        compute_slot_mapping(False, org_slot_mapping, seq_id, seq_len, 
-            skip_leading_tokens, 0, vllm_block_size, org_block_table_dict)
-        
-            
-        # Free old block tables
-        self.block_manager._free_block_table(block_table)
-        
-        # Update _prompt_token_ids and _output_token_ids
-        compacted_indices = compacted_indices_dict[seq_id]
-        compacted_prompt_token_ids = array(VLLM_TOKEN_ID_ARRAY_TYPE, [])
-        compacted_output_token_ids = array(VLLM_TOKEN_ID_ARRAY_TYPE, [])
-        
-        # index org_slot_mapping
-        org_slot_mapping = [org_slot_mapping[idx] for idx in compacted_indices]
-        
-        prompt_len = len(seq._prompt_token_ids)
-        for i in compacted_indices:
-            if i < prompt_len:
-                compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
-            else:
-                compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
-        
-        seq.data.update_compacted_prompt_token_ids(compacted_prompt_token_ids)
-        seq.data.update_compacted_output_token_ids(compacted_output_token_ids)
-        seq.data._num_computed_tokens = len(compacted_indices)
-                
-        
-        # Allocate new block tables
-        is_encoder_decoder = seq_group.is_encoder_decoder()
-        block_table: BlockTable = \
-            self.block_manager._allocate_sequence(seq,
-                                        seq_group.num_seqs(),
-                                        is_encoder_decoder)
-        
-        # re-attch last token after block table allocation
-        # as vllm scheduler will append a slot to it
-        compacted_output_token_ids.append(seq.data._output_token_ids[-1])
-        seq.data.update_compacted_output_token_ids(compacted_output_token_ids)
-        
-        # Update block table
-        self.block_manager.block_tables[seq.seq_id] = block_table
-        
-        compacted_block_table_dict = {seq.seq_id: block_table._block_ids}
-        
-        # Construct compacted slot mapping
-        compacted_slot_mapping = []
-        skip_leading_tokens = 0
-        vllm_block_size = 16
-        seq_len = seq.get_len() - 1
-        compute_slot_mapping(False, compacted_slot_mapping, seq_id, seq_len, 
-            skip_leading_tokens, 0, vllm_block_size, compacted_block_table_dict)
-        
-        
-        mask = [a != b for a, b in zip(org_slot_mapping, compacted_slot_mapping)]
-
-        # Use compress to filter both lists using the mask
-        org_slot_mapping = list(compress(org_slot_mapping, mask))
-        compacted_slot_mapping = list(compress(compacted_slot_mapping, mask))
-        
-        # Construct compactor input
-        kv_mmaps.append([org_slot_mapping, compacted_slot_mapping])
-
-        import pdb
-        pdb.set_trace()
-        
-    # Construct & return compactor input
-    return kv_mmaps
-
-        # In seq.data
-        #def get_len(self) -> int:
-        #    return len(self._output_token_ids) + len(self._prompt_token_ids)
-        
-        #@property
-        #def n_blocks(self) -> int:
-        #    return (self.get_len() + self.block_size - 1) // self.block_size
-        
-        # self._output_token_ids & self._prompt_token_ids need changing
-        
-        
-        # Compute old slot mapping from old block tables
-        #vllm_block_size = 16
-        #skip_leading_tokens = 0
-        #seq_len = seq.get_len()
-        #seq_id = seq.seq_id
-        #slot_mapping = []
-        #compute_slot_mapping(False, slot_mapping, seqid, seq_len, 
-        #    skip_leading_tokens, 0, vllm_block_size, block_ids)
-        
-        
-        
 
 def _new_schedule_running(
     self,
@@ -302,7 +189,7 @@ def _new_schedule_running(
     assert len(self._async_stopped) == 0
     
     # Jiayi Modification starts
-    kv_mmaps_total = []
+    dst_slot_mappings = {}
     # Jiayi Modification ends
     
     while running_queue:
@@ -326,8 +213,11 @@ def _new_schedule_running(
             continue
 
         # Jiayi Modification starts
-        kv_mmaps = _renew_slots(self, seq_group)
-        kv_mmaps_total.extend(kv_mmaps)
+        compacted_indices_dict = self.compactor_output.compacted_indices_dict
+        BaseSchedulerCompactor.compact_slots(
+            compacted_indices_dict, 
+            dst_slot_mappings,
+            seq_group)
         # Jiayi Modification ends
         
         # NOTE(woosuk): Preemption happens only when there is no available
@@ -413,7 +303,7 @@ def _new_schedule_running(
     self._scheduler_running_outputs_cache[self.next_cache_id].reset()
     self._scheduled_seq_group_cache[self.next_cache_id].reset()
 
-    return ret, CompactorInput(kv_mmaps=kv_mmaps_total)
+    return ret, CompactorInput(dst_slot_mappings=dst_slot_mappings)
 
 def _new_schedule_default(self) -> SchedulerOutputs:
     """Schedule queued requests.

@@ -32,7 +32,8 @@ from lmcache_vllm.models.llama import inject_llama
 from lmcache_vllm.attention.flash_attn import inject_flash_attn
 from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
 
-from lmcache_vllm.compactor import DropMidCompactor, CompactorInput, CompactorOutput
+from lmcache_vllm.compactor import (H2OCompactor, CompactorInput, 
+        CompactorOutput, LMCacheCompactorBuilder)
 
 from lmcache.logging import init_logger
 logger = init_logger(__name__)
@@ -50,7 +51,9 @@ def new_execute_model(
     init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
     
     # FIXME (Jiayi): please implement
-    lmcache_compactor = init_or_get_lmcache_compactor()
+    lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
+                            instance_id="lmcache_compactor",
+                            compactor_type="H2O")
 
     # TODO(Jiayi): broadcast the necessary `seq_group_metadata` in every model
     # execution. Maybe there's a more efficient way.
@@ -58,6 +61,11 @@ def new_execute_model(
     
     model_input_subset = create_model_input_subset(
         self.model_config.model, self.model)
+    
+    
+    # Preallocate memory for imp_scores
+    lmcache_compactor.allocate_imp_scores(model_input)
+    
     
     # TODO (Jiayi): move this in a separate function
     # LMCache memory compaction (move kv cache)
@@ -237,7 +245,7 @@ def new_execute_model(
 
     
     # lmcache_compactor post model actions
-    compactor_output = lmcache_compactor(model_input, seq_group_metadata_list)
+    compactor_output = lmcache_compactor.post_model_update(model_input)
     
     return [output], compactor_output
 
