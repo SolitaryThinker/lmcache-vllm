@@ -91,6 +91,9 @@ class H2OCompactor(BaseLocalCompactor):
                     attn_layer.attn._k_scale,
                     attn_layer.attn._v_scale,
                 )
+            
+            # pop src_slot_mapping to reduce memory usage
+            self.src_slot_mappings.pop(seq_id)
     
     def compute_inidces(
         self,
@@ -142,13 +145,23 @@ class H2OCompactor(BaseLocalCompactor):
                     chunked_attetnion_weights[:, :, idx]
                 )
                 seq_data = seq_group_metadata.seq_data[seq_id]
-                total_seq_len = seq_data.get_len()
+                seq_len = seq_data.get_len()
                 
                 # FIXME(Jiayi): fix the logic here
-                if total_seq_len == self.max_window_size:
-                    compacted_indices = self.compute_indices(seq_id)
+                if seq_len < self.max_window_size:
+                    break
+                
+                compacted_indices = self.compute_indices(seq_id)
                 compacted_indices_dict[seq_id] = compacted_indices
-        
+
+                # update src_slot_mappings
+                slot_mapping = []
+                vllm_block_size = 16
+                compute_slot_mapping(False, slot_mapping, seq_id, seq_len, 
+                    0, 0, vllm_block_size, seq_group_metadata.block_tables)
+                
+                self.src_slot_mappings[seq_id] = slot_mapping[compacted_indices]
+                
         compactor_output = CompactorOutput(
             compacted_indices_dict=compacted_indices_dict,)
         return compactor_output
