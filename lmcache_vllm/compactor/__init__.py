@@ -24,6 +24,8 @@ class LMCacheCompactorBuilder:
         if instance_id not in cls._instances:
             if compactor_type == "H2O":
                 compactor = H2OCompactor()
+            else:
+                raise Exception(f"Compactor type {compactor_type} not supported")
             cls._instances[instance_id] = compactor
             return compactor
         else:
