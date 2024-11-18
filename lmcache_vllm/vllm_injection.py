@@ -63,6 +63,10 @@ def new_execute_model(
         self.model_config.model, self.model)
     
     
+    # TODO(Jiayi): squash the following function calls into 
+    # something like "pre_model_update"
+    
+    # TODO(Jiayi): clean up memory according to end_seq_ids
     # Preallocate memory for imp_scores
     lmcache_compactor.allocate_imp_scores(model_input)
     
