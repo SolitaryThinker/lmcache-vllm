@@ -32,7 +32,7 @@ class H2OCompactor(BaseLocalCompactor):
         # imp_scores should be initialized as the seq_id enters
         self.imp_scores = {}
         
-        self.min_window_size = 256
+        self.min_window_size = 400
         self.max_window_size = 512
         
         #num_layer * Tensor([num_heads, num_toks])
@@ -44,6 +44,7 @@ class H2OCompactor(BaseLocalCompactor):
         self.num_kv_heads = 8
         self.head_size = 128
         self.device = "cuda"
+        self.vllm_block_size = 16
 
         # The logits buffer need to be preallocated
         # to be compatible with cuda graph
@@ -246,15 +247,14 @@ class H2OCompactor(BaseLocalCompactor):
                 if seq_len < self.max_window_size:
                     continue
                 
-                logger.debug("[Compactor] h2o_local_compactor taking effect!")
+                logger.debug(f"[Compactor] h2o_local_compactor taking effect! seq_id: {seq_id}")
                 compacted_indices = self.compute_indices(seq_id)
                 compacted_indices_dict[seq_id] = compacted_indices
 
                 # update src_slot_mappings
                 slot_mapping = []
-                vllm_block_size = 16
                 compute_slot_mapping(False, slot_mapping, seq_id, seq_len, 
-                    0, 0, vllm_block_size, seq_group_metadata.block_tables)
+                    0, 0, self.vllm_block_size, seq_group_metadata.block_tables)
                 
                 compacted_slot_mapping =[]
                 for compacted_indices_layer in compacted_indices:

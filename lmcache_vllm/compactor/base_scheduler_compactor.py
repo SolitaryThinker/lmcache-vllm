@@ -36,7 +36,7 @@ class BaseSchedulerCompactor:
             if seq_id not in compacted_indices_dict:
                 continue
             
-            logger.debug("[Compactor] base_scheduler_compactor taking effect!")
+            logger.debug(f"[Compactor] base_scheduler_compactor taking effect! seq_id: {seq_id}")
             
             # Get block tables
             # NOTE: block table object is under vllm.block
@@ -72,16 +72,15 @@ class BaseSchedulerCompactor:
             rep_compacted_indices = compacted_indices[rep_layer_idx]
             for i in rep_compacted_indices:
                 # TODO(Jiayi): compaction in prompt (prefill) is not supported now
-                #if i < prompt_len:
-                #    compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
-                #else:
-                #    compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
-                compacted_output_token_ids.append(seq.data._output_token_ids[i])
+                if i < prompt_len:
+                    compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
+                else:
+                    compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
+                #compacted_output_token_ids.append(seq.data._output_token_ids[i])
             
             seq.data.update_compacted_prompt_token_ids(compacted_prompt_token_ids)
-            seq.data.update_compacted_output_token_ids(compacted_output_token_ids)
             seq.data._num_computed_tokens = len(rep_compacted_indices)
-                    
+            
             
             # Allocate new block tables
             is_encoder_decoder = seq_group.is_encoder_decoder()
