@@ -22,9 +22,6 @@ class BaseLocalCompactor(metaclass=abc.ABCMeta):
     def __init__(self):
         # NOTE(Jiayi): keeping src_slot_mappings in local compactor
         # minimizes communication overhead between scheduler and worker
-        # However, the following case would result a memory leak:
-        # local compactor decides to compact but scheduler finishes
-        # the req.
          
         #{seq_idx: num_layers * slot_mapping}
         self.src_slot_mappings = {}
@@ -129,7 +126,6 @@ class BaseLocalCompactor(metaclass=abc.ABCMeta):
                 key_cache, value_cache = PagedAttention.split_kv_cache(
                         kv_cache, self.num_kv_heads, self.head_size)
                 
-                #_, _, num_heads, head_size = kv_cache[0].shape
                 key_cache_temp = kv_cache[0].reshape(
                     -1, self.num_kv_heads, self.head_size)
                 value_cache_temp = kv_cache[1].reshape(
@@ -139,6 +135,7 @@ class BaseLocalCompactor(metaclass=abc.ABCMeta):
                     src_slot_mapping_layer, 
                     device=dst_slot_mapping.device)
                 
+                assert len(src_slot_mapping_layer) == len(dst_slot_mapping)
                 misaligned_indices = torch.where(
                     src_slot_mapping_layer != dst_slot_mapping)[0]
                 
@@ -151,7 +148,7 @@ class BaseLocalCompactor(metaclass=abc.ABCMeta):
                     value_cache_temp[src_slot_mapping_layer[misaligned_indices]],
                     key_cache,
                     value_cache,
-                    dst_slot_mapping[misaligned_indices].flatten(),
+                    dst_slot_mapping[misaligned_indices],
                     attn_layer.attn.kv_cache_dtype,
                     attn_layer.attn._k_scale,
                     attn_layer.attn._v_scale,

@@ -76,8 +76,7 @@ class BaseSchedulerCompactor:
                     compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
                 else:
                     compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
-                #compacted_output_token_ids.append(seq.data._output_token_ids[i])
-            
+                                
             seq.data.update_compacted_prompt_token_ids(compacted_prompt_token_ids)
             seq.data._num_computed_tokens = len(rep_compacted_indices)
             
