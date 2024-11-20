@@ -85,10 +85,13 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
     # batch has completed.
     if not self._has_remaining_steps(seq_group_metadata_list):
         # Schedule iteration
+        # Jiayi Modification starts
         (seq_group_metadata_list, scheduler_outputs,
-            allow_async_output_proc, compactor_input) = \
+            allow_async_output_proc) = \
                 self.scheduler[virtual_engine].schedule()
-
+        compactor_input = self.scheduler[virtual_engine].compactor_input
+        # Jiayi Modification ends
+        
         ctx.seq_group_metadata_list = seq_group_metadata_list
         ctx.scheduler_outputs = scheduler_outputs
 
@@ -139,8 +142,6 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
             execute_model_req=execute_model_req,
             compactor_input=compactor_input)
         self.scheduler[virtual_engine].compactor_output = compactor_output
-        import pdb
-        pdb.set_trace()
         # Jiayi Modification ends
         
         
@@ -178,15 +179,22 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
         if outputs and allow_async_output_proc:
             assert len(outputs) == 1, (
                 "Async postprocessor expects only a single output set")
-
-            self._advance_to_next_step(
-                outputs[0], seq_group_metadata_list,
-                scheduler_outputs.scheduled_seq_groups)
+            
+            # Jiayi Modification starts
+            finished_req_ids = self._advance_to_next_step(
+                        outputs[0], seq_group_metadata_list,
+                        scheduler_outputs.scheduled_seq_groups)
+            # FIXME(Jiayi): req_ids are now treated as seq_ids
+            # Need to fix this later
+            self.scheduler[virtual_engine].compactor_input.end_seq_ids = \
+                finished_req_ids
+            # Jiayi Modification ends
 
         # Check if need to run the usual non-async path
         if not allow_async_output_proc:
             self._process_model_outputs(ctx=ctx)
 
+            
             # Log stats.
             self.do_log_stats(scheduler_outputs, outputs)
 

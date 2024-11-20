@@ -31,6 +31,7 @@ from lmcache_vllm.sequence_adapter import (NewSequenceData)
 from lmcache_vllm.models.llama import inject_llama
 from lmcache_vllm.attention.flash_attn import inject_flash_attn
 from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
+from lmcache_vllm.attention.xformers_compact import inject_xformers_compact
 
 from lmcache_vllm.compactor import (H2OCompactor, CompactorInput, 
         CompactorOutput, LMCacheCompactorBuilder)
@@ -48,12 +49,11 @@ def new_execute_model(
     compactor_input = None,
     num_steps: int = 1,
 ): 
-    init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
+    # TODO: Currently, lmcache is disabled in memory compaction 
+    # Please make memory compaction consistent with lmcache
+    if os.getenv("LMC_COMPACTOR", None) is None:
+        init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
     
-    # FIXME (Jiayi): please implement
-    lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
-                            instance_id="lmcache_compactor",
-                            compactor_type="H2O")
 
     # TODO(Jiayi): broadcast the necessary `seq_group_metadata` in every model
     # execution. Maybe there's a more efficient way.
@@ -68,37 +68,47 @@ def new_execute_model(
     
     # TODO(Jiayi): clean up memory according to end_seq_ids
     # Preallocate memory for imp_scores
-    lmcache_compactor.allocate_imp_scores(model_input)
+    if os.getenv("LMC_COMPACTOR", None) == "True":
+        lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
+                                instance_id="lmcache_compactor",
+                                compactor_type="H2O")
+        lmcache_compactor.allocate_imp_scores(model_input)
     
     
-    # TODO (Jiayi): move this in a separate function
-    # LMCache memory compaction (move kv cache)
-    if compactor_input is not None:
-        lmcache_compactor.compact_memory(
-            model_input_subset,
-            kv_caches,
-            compactor_input.dst_slot_mappings)
+        # TODO (Jiayi): move this in a separate function
+        # LMCache memory compaction (move kv cache)
+        if compactor_input is not None:
+            lmcache_compactor.compact_memory(
+                model_input_subset,
+                kv_caches,
+                compactor_input.dst_slot_mappings)
+            
+            #lmcache_compactor.compact_memory(
+            #    model_input_subset,
+            #    kv_caches,
+            #    compactor_input.dst_slot_mappings)
     
 
     # LMCache retrieval
-    retrieve_status = lmcache_should_retrieve(model_input, kv_caches)
     is_skip = False
-    if retrieve_status != RetrieveStatus.NONE:
-        logger.info(f"KV cache retrieving mode: {retrieve_status}")
-        model_input, is_skip = lmcache_retrieve_kv(
-            self.model, model_input, 
-            model_input_subset, kv_caches, retrieve_status)
-        if is_skip:
-            logger.debug("Prefill is entirely skipped")
-            
-            # Create a dummy hiddens_states
-            num_tok = len(model_input.input_tokens)
-            num_dim = self.model.model.embed_tokens.embedding_dim
-            hidden_or_intermediate_states = torch.ones(
-                num_tok, num_dim,
-                device=model_input.input_tokens.device,
-                dtype=self.model.model.embed_tokens.weight.dtype)
-            
+    if os.getenv("LMC_COMPACTOR", None) is None:
+        retrieve_status = lmcache_should_retrieve(model_input, kv_caches)
+        if retrieve_status != RetrieveStatus.NONE:
+            logger.info(f"KV cache retrieving mode: {retrieve_status}")
+            model_input, is_skip = lmcache_retrieve_kv(
+                self.model, model_input, 
+                model_input_subset, kv_caches, retrieve_status)
+            if is_skip:
+                logger.debug("Prefill is entirely skipped")
+                
+                # Create a dummy hiddens_states
+                num_tok = len(model_input.input_tokens)
+                num_dim = self.model.model.embed_tokens.embedding_dim
+                hidden_or_intermediate_states = torch.ones(
+                    num_tok, num_dim,
+                    device=model_input.input_tokens.device,
+                    dtype=self.model.model.embed_tokens.weight.dtype)
+                
     
     # TODO(Jiayi): Currently, we do not handle the last chunk in chunk prefill
     
@@ -162,14 +172,16 @@ def new_execute_model(
             model_forward_end.record()
 
         # LMCache storing
-        store_status = lmcache_should_store(model_input, kv_caches)
-        if any([status != StoreStatus.NONE for status in store_status]):
-            logger.info(f"KV cache saving mode: {store_status}")
-            lmcache_store_kv(model_executable, model_input, self.cache_config,
-                            kv_caches, store_status)
+        if os.getenv("LMC_COMPACTOR", None) is None:
+            store_status = lmcache_should_store(model_input, kv_caches)
+            if any([status != StoreStatus.NONE for status in store_status]):
+                logger.info(f"KV cache saving mode: {store_status}")
+                lmcache_store_kv(model_executable, model_input, self.cache_config,
+                                kv_caches, store_status)
 
     # CacheBlend updates
-    if lmcache_get_config().enable_blending and \
+    if os.getenv("LMC_COMPACTOR", None) is None and \
+            lmcache_get_config().enable_blending and \
             hasattr(model_input.attn_metadata, "blend_metadata") and \
             model_input.attn_metadata.blend_metadata.selected_token_indices is not None:
         new_selected_token_indices = \
@@ -249,7 +261,10 @@ def new_execute_model(
 
     
     # lmcache_compactor post model actions
-    compactor_output = lmcache_compactor.post_model_update(model_input)
+    compactor_output = None
+    if os.getenv("LMC_COMPACTOR", None) == "True":
+        compactor_output = lmcache_compactor.post_model_update(
+                                kv_caches, model_input)
     
     return [output], compactor_output
 
@@ -405,7 +420,10 @@ def InitLMCacheEnvironment() -> None:
     vllm.sequence.SequenceData = NewSequenceData
     
     # inject flash attention
-    inject_flash_attn_compact()
+    # inject_flash_attn_compact()
+    
+    # inject xformers attention
+    inject_xformers_compact()
     
     # Cacheblend
     if lmcache_get_config().enable_blending:

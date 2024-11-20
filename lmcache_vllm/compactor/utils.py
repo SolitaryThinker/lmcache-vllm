@@ -19,6 +19,7 @@ class CompactorInput:
     
     # {seq_idx: List[int]}
     dst_slot_mappings: Dict[int, List[int]]
+    end_seq_ids: List[int]
 
 
 # NOTE(Jiayi): a potential optimization is to only send the
@@ -26,5 +27,4 @@ class CompactorInput:
 @dataclass
 class CompactorOutput:
     compacted_indices_dict: Dict[int, List[List[int]]]
-    end_seq_ids: List[int]
 

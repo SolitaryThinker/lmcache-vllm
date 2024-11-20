@@ -187,8 +187,6 @@ def init_lmcache_engine(
 
     return engine
 
-def init_or_get_lmcache_compactor():
-    
 
 def broadcast_seq_group_metadata(
     model_input: "ModelInputForGPUWithSamplingMetadata",

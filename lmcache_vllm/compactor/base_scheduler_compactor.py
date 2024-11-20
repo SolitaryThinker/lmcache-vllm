@@ -1,6 +1,15 @@
 import abc
 from typing import Tuple, List, Dict
 import torch
+from array import array
+
+from vllm.attention.backends.utils import compute_slot_mapping
+from vllm.sequence import SequenceGroup
+from lmcache.logging import init_logger
+
+logger = init_logger(__name__)
+
+VLLM_TOKEN_ID_ARRAY_TYPE = "l"
 
 # FIXME(Jiayi): this LocalCompactor design need to be 
 # compatible with PP/TP some how
@@ -12,6 +21,7 @@ class BaseSchedulerCompactor:
     @classmethod
     def compact_slots(
         cls,
+        block_manager,
         compacted_indices_dict,
         dst_slot_mappings,
         seq_group: SequenceGroup):
@@ -26,10 +36,12 @@ class BaseSchedulerCompactor:
             if seq_id not in compacted_indices_dict:
                 continue
             
+            logger.debug("[Compactor] base_scheduler_compactor taking effect!")
+            
             # Get block tables
             # NOTE: block table object is under vllm.block
             # not in vllm.core
-            block_table = self.block_manager.block_tables[seq.seq_id]
+            block_table = block_manager.block_tables[seq.seq_id]
             org_block_table_dict = {seq.seq_id: block_table._block_ids}
 
             # Construct original slot mapping
@@ -43,7 +55,7 @@ class BaseSchedulerCompactor:
             
                 
             # Free old block tables
-            self.block_manager._free_block_table(block_table)
+            block_manager._free_block_table(block_table)
             
             # Update _prompt_token_ids and _output_token_ids
             compacted_indices = compacted_indices_dict[seq_id]
@@ -52,21 +64,29 @@ class BaseSchedulerCompactor:
             
             
             prompt_len = len(seq._prompt_token_ids)
-            for i in compacted_indices:
-                if i < prompt_len:
-                    compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
-                else:
-                    compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
+            
+            # NOTE(Jiayi): we only use the first layer of the compacted indices
+            # TODO(Jiayi): please check whether the dropped tokens are included
+            # in the fial output
+            rep_layer_idx = 0
+            rep_compacted_indices = compacted_indices[rep_layer_idx]
+            for i in rep_compacted_indices:
+                # TODO(Jiayi): compaction in prompt (prefill) is not supported now
+                #if i < prompt_len:
+                #    compacted_prompt_token_ids.append(seq.data._prompt_token_ids[i])
+                #else:
+                #    compacted_output_token_ids.append(seq.data._output_token_ids[i-prompt_len])
+                compacted_output_token_ids.append(seq.data._output_token_ids[i])
             
             seq.data.update_compacted_prompt_token_ids(compacted_prompt_token_ids)
             seq.data.update_compacted_output_token_ids(compacted_output_token_ids)
-            seq.data._num_computed_tokens = len(compacted_indices)
+            seq.data._num_computed_tokens = len(rep_compacted_indices)
                     
             
             # Allocate new block tables
             is_encoder_decoder = seq_group.is_encoder_decoder()
             block_table: BlockTable = \
-                self.block_manager._allocate_sequence(seq,
+                block_manager._allocate_sequence(seq,
                                             seq_group.num_seqs(),
                                             is_encoder_decoder)
             
@@ -76,7 +96,7 @@ class BaseSchedulerCompactor:
             seq.data.update_compacted_output_token_ids(compacted_output_token_ids)
             
             # Update block table
-            self.block_manager.block_tables[seq.seq_id] = block_table
+            block_manager.block_tables[seq.seq_id] = block_table
             
             compacted_block_table_dict = {seq.seq_id: block_table._block_ids}
             

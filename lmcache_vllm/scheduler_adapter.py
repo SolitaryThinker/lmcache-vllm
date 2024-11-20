@@ -131,8 +131,10 @@ def new_scheduler__init__(
 
     # Jiayi Modification starts
     self.compactor_output = CompactorOutput(
-        compacted_indices_dict={},
-        end_seq_ids=[],)
+        compacted_indices_dict={})
+    
+    self.compactor_input = CompactorInput(
+        dst_slot_mappings={}, end_seq_ids=[])
     # Jiayi Modification ends
 
 
@@ -213,11 +215,13 @@ def _new_schedule_running(
             continue
 
         # Jiayi Modification starts
-        compacted_indices_dict = self.compactor_output.compacted_indices_dict
-        BaseSchedulerCompactor.compact_slots(
-            compacted_indices_dict, 
-            dst_slot_mappings,
-            seq_group)
+        if os.getenv("LMC_COMPACTOR", None) == "True":
+            compacted_indices_dict = self.compactor_output.compacted_indices_dict
+            BaseSchedulerCompactor.compact_slots(
+                self.block_manager,
+                compacted_indices_dict, 
+                dst_slot_mappings,
+                seq_group)
         # Jiayi Modification ends
         
         # NOTE(woosuk): Preemption happens only when there is no available
@@ -303,7 +307,10 @@ def _new_schedule_running(
     self._scheduler_running_outputs_cache[self.next_cache_id].reset()
     self._scheduled_seq_group_cache[self.next_cache_id].reset()
 
-    return ret, CompactorInput(dst_slot_mappings=dst_slot_mappings)
+    # Jiayi Modification starts
+    self.compactor_input.dst_slot_mappings = dst_slot_mappings
+    # Jiayi Modification ends
+    return ret
 
 def _new_schedule_default(self) -> SchedulerOutputs:
     """Schedule queued requests.
@@ -343,13 +350,10 @@ def _new_schedule_default(self) -> SchedulerOutputs:
     # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
     # only contains decode requests, not chunked prefills.
     
-    # Jiayi Modification starts
-    compactor_input = None
-    # Jiayi Modification ends
     
     if len(prefills.seq_groups) == 0:
         # Jiayi Modification starts
-        running_scheduled, compactor_input = self._schedule_running(budget,
+        running_scheduled = self._schedule_running(budget,
                                                     curr_loras,
                                                     enable_chunking=False)
         # Jiayi Modification ends
@@ -412,7 +416,7 @@ def _new_schedule_default(self) -> SchedulerOutputs:
         num_lookahead_slots=running_scheduled.num_lookahead_slots,
         running_queue_size=len(self.running),
         preempted=preempted,
-    ), compactor_input
+    )
     
 def new_schedule(
             self
@@ -424,7 +428,7 @@ def new_schedule(
 
     #import pdb
     #pdb.set_trace()
-    scheduler_outputs, compactor_input = self._schedule()
+    scheduler_outputs = self._schedule()
     #pdb.set_trace()
     now = time.time()
 
@@ -568,4 +572,4 @@ def new_schedule(
 
     # Return results
     return (seq_group_metadata_list, scheduler_outputs,
-            allow_async_output_proc, compactor_input)
+            allow_async_output_proc)
