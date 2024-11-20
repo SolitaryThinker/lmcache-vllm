@@ -19,7 +19,7 @@ class BaseSchedulerCompactor:
     """
     
     @classmethod
-    def compact_slots(
+    def compact_blocks(
         cls,
         block_manager,
         compacted_indices_dict,

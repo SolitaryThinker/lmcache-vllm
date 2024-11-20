@@ -126,10 +126,15 @@ class BaseLocalCompactor(metaclass=abc.ABCMeta):
                 key_cache, value_cache = PagedAttention.split_kv_cache(
                         kv_cache, self.num_kv_heads, self.head_size)
                 
-                key_cache_temp = kv_cache[0].reshape(
-                    -1, self.num_kv_heads, self.head_size)
-                value_cache_temp = kv_cache[1].reshape(
-                    -1, self.num_kv_heads, self.head_size)
+                #import pdb
+                #pdb.set_trace()
+                key_cache_temp = key_cache.permute(0,3,1,2,4)
+                key_cache_temp = key_cache_temp.reshape(
+                                -1, self.num_kv_heads, self.head_size)
+                
+                value_cache_temp = value_cache.permute(0,3,1,2)
+                value_cache_temp = value_cache_temp.reshape(
+                                -1, self.num_kv_heads, self.head_size)
                 
                 src_slot_mapping_layer = torch.tensor(
                     src_slot_mapping_layer, 

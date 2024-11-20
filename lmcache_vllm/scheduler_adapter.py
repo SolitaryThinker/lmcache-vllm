@@ -217,7 +217,7 @@ def _new_schedule_running(
         # Jiayi Modification starts
         if os.getenv("LMC_COMPACTOR", None) == "True":
             compacted_indices_dict = self.compactor_output.compacted_indices_dict
-            BaseSchedulerCompactor.compact_slots(
+            BaseSchedulerCompactor.compact_blocks(
                 self.block_manager,
                 compacted_indices_dict, 
                 dst_slot_mappings,
