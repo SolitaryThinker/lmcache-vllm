@@ -15,7 +15,7 @@ from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.attention.backends.utils import compute_slot_mapping
 from vllm.utils import Device, PyObjectCache
 
-from lmcache_vllm.compactor import BaseSchedulerCompactor, CompactorInput, CompactorOutput
+from lmcache.compactor import BaseSchedulerCompactor, CompactorInput, CompactorOutput
 import time
 from collections import deque
 import os

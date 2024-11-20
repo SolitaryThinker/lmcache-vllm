@@ -19,7 +19,7 @@ from vllm.attention.ops.paged_attn import (PagedAttention,
 from vllm.attention.backends.xformers import _get_seq_len_block_table_args
 import lmc_ops
 from lmcache.logging import init_logger
-from lmcache_vllm.compactor import LMCacheCompactorBuilder
+from lmcache.compactor import LMCacheCompactorBuilder
 import os
 
 logger = init_logger(__name__)

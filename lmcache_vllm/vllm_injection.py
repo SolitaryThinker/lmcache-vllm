@@ -33,7 +33,7 @@ from lmcache_vllm.attention.flash_attn import inject_flash_attn
 from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
 from lmcache_vllm.attention.xformers_compact import inject_xformers_compact
 
-from lmcache_vllm.compactor import (CompactorInput, CompactorOutput,
+from lmcache.compactor import (CompactorInput, CompactorOutput,
                                     LMCacheCompactorBuilder)
 
 from lmcache.logging import init_logger
@@ -69,9 +69,10 @@ def new_execute_model(
     # TODO(Jiayi): clean up memory according to end_seq_ids
     # Preallocate memory for imp_scores
     if os.getenv("LMC_COMPACTOR", None) == "True":
+        compactor_type = os.getenv("COMPACTOR_TYPE", None)
         lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
                                 instance_id="lmcache_compactor",
-                                compactor_type="Sink")#"H2O")
+                                compactor_type=compactor_type)
         lmcache_compactor.allocate_imp_scores(model_input)
     
         if compactor_input is not None:
