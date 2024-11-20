@@ -33,8 +33,8 @@ from lmcache_vllm.attention.flash_attn import inject_flash_attn
 from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
 from lmcache_vllm.attention.xformers_compact import inject_xformers_compact
 
-from lmcache_vllm.compactor import (H2OCompactor, CompactorInput, 
-        CompactorOutput, LMCacheCompactorBuilder)
+from lmcache_vllm.compactor import (CompactorInput, CompactorOutput,
+                                    LMCacheCompactorBuilder)
 
 from lmcache.logging import init_logger
 logger = init_logger(__name__)
@@ -71,22 +71,20 @@ def new_execute_model(
     if os.getenv("LMC_COMPACTOR", None) == "True":
         lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
                                 instance_id="lmcache_compactor",
-                                compactor_type="H2O")
+                                compactor_type="Sink")#"H2O")
         lmcache_compactor.allocate_imp_scores(model_input)
     
-    
-        # TODO (Jiayi): move this in a separate function
-        # LMCache memory compaction (move kv cache)
         if compactor_input is not None:
+            # LMCache memory compaction (move kv cache)
             lmcache_compactor.compact_memory(
                 model_input_subset,
                 kv_caches,
                 compactor_input.dst_slot_mappings)
             
-            #lmcache_compactor.compact_memory(
-            #    model_input_subset,
-            #    kv_caches,
-            #    compactor_input.dst_slot_mappings)
+            # LMCache memory compaction (move kv cache)
+            lmcache_compactor.clean_request_states(
+                compactor_input.end_seq_ids,
+            )
     
 
     # LMCache retrieval

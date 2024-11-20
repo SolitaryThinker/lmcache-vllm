@@ -1,11 +1,13 @@
 from typing import Dict, Optional
 
 from lmcache_vllm.compactor.h2o_local_compactor import H2OCompactor
+from lmcache_vllm.compactor.sink_local_compactor import SinkCompactor
 from lmcache_vllm.compactor.base_local_compactor import BaseLocalCompactor
 from lmcache_vllm.compactor.utils import CompactorInput, CompactorOutput
 from lmcache_vllm.compactor.base_scheduler_compactor import BaseSchedulerCompactor
 
-__all__ = ["H2OCompactor", "BaseSchedulerCompactor",
+__all__ = ["H2OCompactor", "SinkCompactor"
+           "BaseSchedulerCompactor",
            "CompactorInput", "CompactorOutput"]
 
 class LMCacheCompactorBuilder:
@@ -27,6 +29,8 @@ class LMCacheCompactorBuilder:
         if instance_id not in cls._instances:
             if compactor_type == "H2O":
                 compactor = H2OCompactor()
+            elif compactor_type == "Sink":
+                compactor = SinkCompactor()
             else:
                 raise Exception(f"Compactor type {compactor_type} not supported")
             cls._instances[instance_id] = compactor
