@@ -380,6 +380,8 @@ def lmcache_should_store(
 
 @_lmcache_nvtx_annotate
 def lmcache_store_kv(
+    model_config: ModelConfig,
+    parallel_config: ParallelConfig,
     model_executable: torch.nn.Module,
     model_input: "ModelInputForGPUWithSamplingMetadata",
     cache_config: CacheConfig,
@@ -421,6 +423,11 @@ def lmcache_store_kv(
     else:
         end_layer = len(kv_caches)
 
+    # For Turing GPU
+    num_heads = model_config.get_num_kv_heads(parallel_config)
+    head_size = model_config.get_head_size()
+    gpu_capability = torch.cuda.get_device_capability()
+
     seq_data_idx = 0
     seq_group_metadata_list = model_input.seq_group_metadata_list
     for seq_group_metadata in seq_group_metadata_list:
@@ -449,11 +456,22 @@ def lmcache_store_kv(
                 if len(slot_mapping) > 0:
                     for layer_id in range(start_layer, end_layer):
                         kv_cache = kv_caches[layer_id - start_layer]
+                        """
+                        Check the GPU architecture.
+                        Some older GPUs (e.g. Turing, Volta) has different kv_caches shape
+                        """
+                        if (gpu_capability == (7, 5)):
+                            # Turing. kv_cache has shape: [num_blocks, num_heads x head_size x block_size]
+                            key_cache = kv_cache[0].reshape(-1, num_heads, head_size, cache_config.block_size)
+                            value_cache = kv_cache[1].reshape(-1, num_heads, head_size, cache_config.block_size)
 
-                        _, _, num_heads, head_size = kv_cache[0].shape
+                            key_cache = key_cache.permute(0,3,1,2).reshape(-1, num_heads, head_size)
+                            value_cache = value_cache.permute(0,3,1,2).reshape(-1, num_heads, head_size)
+                        else:
+                            _, _, num_heads, head_size = kv_cache[0].shape
 
-                        key_cache = kv_cache[0].reshape(-1, num_heads, head_size)
-                        value_cache = kv_cache[1].reshape(-1, num_heads, head_size)
+                            key_cache = kv_cache[0].reshape(-1, num_heads, head_size)
+                            value_cache = kv_cache[1].reshape(-1, num_heads, head_size)
                         
                         kv_tuple_list.append(
                                 (key_cache[slot_mapping],
@@ -582,10 +600,9 @@ def lmcache_retrieve_kv(
                 if num_computed_tokens == total_seq_len:
                     lmc_num_computed_tokens -= 1
                     num_computed_tokens -= 1
-            
+
             num_computed_tokens_list.append(num_computed_tokens)
             lmc_num_computed_tokens_list.append(lmc_num_computed_tokens)
-            
             
             # No cache found, move on
             if lmc_num_computed_tokens == 0:
