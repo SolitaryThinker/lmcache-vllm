@@ -138,7 +138,6 @@ def new_scheduler__init__(
     # Jiayi Modification ends
 
 
-
 def _new_schedule_running(
     self,
     budget: SchedulingBudget,

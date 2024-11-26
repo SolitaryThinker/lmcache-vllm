@@ -55,9 +55,9 @@ def new_execute_model(
         init_lmcache_engine(self.model_config, self.parallel_config, self.cache_config)
     
 
-    # TODO(Jiayi): broadcast the necessary `seq_group_metadata` in every model
-    # execution. Maybe there's a more efficient way.
-    model_input = broadcast_seq_group_metadata(model_input, self.is_driver_worker)
+        # TODO(Jiayi): broadcast the necessary `seq_group_metadata` in every model
+        # execution. Maybe there's a more efficient way.
+        model_input = broadcast_seq_group_metadata(model_input, self.is_driver_worker)
     
     model_input_subset = create_model_input_subset(
         self.model_config.model, self.model)
@@ -73,7 +73,9 @@ def new_execute_model(
         lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
                                 instance_id="lmcache_compactor",
                                 compactor_type=compactor_type)
-        lmcache_compactor.allocate_imp_scores(model_input)
+        is_profile_run = (kv_caches is None) or (kv_caches[0] is None)
+        if not is_profile_run:
+            lmcache_compactor.allocate_imp_scores(model_input)
     
         if compactor_input is not None:
             # LMCache memory compaction (move kv cache)
