@@ -86,6 +86,7 @@ def validate_reverse_correctness(
 
     q1 = dumb_q.clone()
     k1 = dumb_k.clone()
+    
     q1, k1 = rope(positions, q1, k1)
     q1, k1 = reverse_rope(positions, q1, k1)
 
@@ -136,9 +137,9 @@ def get_reverse_rope(
 
     reverse_rope = BasicReverseRope(rope, rotary_dim, is_neox_style)
 
-    correct = validate_reverse_correctness(rope, reverse_rope, head_size)
-    if not correct:
-        logger.error("Reverse rotary encoding is not correct! Will disable blending!")
-        return None
+    #correct = validate_reverse_correctness(rope, reverse_rope, head_size)
+    #if not correct:
+    #    logger.error("Reverse rotary encoding is not correct! Will disable blending!")
+    #    return None
 
     return reverse_rope

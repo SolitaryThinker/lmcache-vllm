@@ -21,7 +21,8 @@ from lmcache_vllm.vllm_adapter import (lmcache_get_config,
         broadcast_seq_group_metadata, StoreStatus, RetrieveStatus,
         SUPPORTED_MODELS)
 
-from lmcache_vllm.scheduler_adapter import (_new_schedule_running, new_schedule, _new_schedule_default,
+from lmcache_vllm.scheduler_adapter import (_new_schedule_running, new_schedule,
+                                            _new_schedule_default,
                                             new_scheduler__init__)
 from lmcache_vllm.worker_base_adapter import new_worker_base_execute_model
 from lmcache_vllm.llm_engine_adapter import new_step
@@ -33,8 +34,8 @@ from lmcache_vllm.attention.flash_attn import inject_flash_attn
 from lmcache_vllm.attention.flash_attn_compact import inject_flash_attn_compact
 from lmcache_vllm.attention.xformers_compact import inject_xformers_compact
 
-from lmcache.compactor import (CompactorInput, CompactorOutput,
-                                    LMCacheCompactorBuilder)
+from lmcache.compactor import (CompactorInput, CompactorOutput, CompactorMetadata,
+                                LMCacheCompactorBuilder)
 
 from lmcache.logging import init_logger
 logger = init_logger(__name__)
@@ -69,11 +70,18 @@ def new_execute_model(
     # TODO(Jiayi): clean up memory according to end_seq_ids
     # Preallocate memory for imp_scores
     if os.getenv("LMC_COMPACTOR", None) == "True":
+        is_profile_run = (kv_caches is None) or (kv_caches[0] is None)
         compactor_type = os.getenv("COMPACTOR_TYPE", None)
+        rotary_emb = self.model.model.layers[0].self_attn.rotary_emb
+        compactor_metadata = CompactorMetadata(
+            num_gpu_blocks=None,
+            rotary_emb=rotary_emb,
+        )
         lmcache_compactor = LMCacheCompactorBuilder.get_or_create(
                                 instance_id="lmcache_compactor",
-                                compactor_type=compactor_type)
-        is_profile_run = (kv_caches is None) or (kv_caches[0] is None)
+                                compactor_type=compactor_type,
+                                compactor_metadata=compactor_metadata)
+        
         if not is_profile_run:
             lmcache_compactor.allocate_imp_scores(model_input)
     
