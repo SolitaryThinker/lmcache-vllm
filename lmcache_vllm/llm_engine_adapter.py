@@ -90,6 +90,7 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
             allow_async_output_proc) = \
                 self.scheduler[virtual_engine].schedule()
         compactor_input = self.scheduler[virtual_engine].compactor_input
+        #print("schedule() has been called")
         # Jiayi Modification ends
         
         ctx.seq_group_metadata_list = seq_group_metadata_list
@@ -142,6 +143,7 @@ def new_step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
             execute_model_req=execute_model_req,
             compactor_input=compactor_input)
         self.scheduler[virtual_engine].compactor_output = compactor_output
+        self.scheduler[virtual_engine].compactor_input.reset()
         # Jiayi Modification ends
         
         

@@ -167,7 +167,8 @@ class NewSequenceData(msgspec.Struct,
     def get_len(self) -> int:
     
         # TODO(Jiayi): make this more elegant
-        if len(self._compacted_output_token_ids) > 0:
+        if len(self._compacted_output_token_ids) > 0 or \
+            len(self._compacted_prompt_token_ids) > 0:
         #if self._compacted_output_token_ids is not None:
         #if hasattr(self, "_compacted_output_token_ids"):
             return len(self._compacted_output_token_ids) + \

@@ -1,8 +1,7 @@
 from typing import Dict, Any, Optional, Callable
 import torch
 
-from vllm.model_executor.layers.rotary_embedding import get_rope as vllm_get_rope
-from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding
+from lmcache_vllm.utils.rotary_embedding import get_rope as lmc_get_rope 
 
 from lmcache.logging import init_logger
 
@@ -16,7 +15,6 @@ class BasicReverseRope:
         self.rope = rope
         self.rotary_dim = rotary_dim
         self.is_neox_style = is_neox_style
-        pass
 
     def do_shuffle(self, t):
         original_shape = t.shape
@@ -33,16 +31,21 @@ class BasicReverseRope:
         else:
             return torch.stack((o2, o1), dim = -1).reshape(original_shape)
 
-    def reverse_encode(self, positions, q, k):
-        sq = self.do_shuffle(q)
+    def reverse_encode(self, positions, k):
         sk = self.do_shuffle(k)
-        nq, nk = self.rope(positions, sq, sk)
-        fq = self.do_shuffle(nq)
+        nk = self.rope(positions, sk)
         fk = self.do_shuffle(nk)
-        return fq, fk
+        return fk
+    
+    def encode(self, positions, k):
+        k = self.rope(positions, k)
+        return k
 
-    def __call__(self, positions, q, k):
-        return self.reverse_encode(positions, q, k)
+    def __call__(self, positions, k, is_reverse=True):
+        if is_reverse:
+            return self.reverse_encode(positions, k)
+        else:
+            return self.encode(positions, k)
 
 def validate_rope_params(
         head_size: int,
@@ -125,7 +128,7 @@ def get_reverse_rope(
         logger.warning("The rope parameters is not supported! Cannot use cacheblend in this case")
         return None
 
-    rope = vllm_get_rope(
+    rope = lmc_get_rope(
             head_size,
             rotary_dim,
             max_position,
