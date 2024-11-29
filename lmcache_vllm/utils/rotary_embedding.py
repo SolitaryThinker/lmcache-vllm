@@ -150,7 +150,8 @@ class RotaryEmbedding(CustomOp):
 
     def forward_cuda(
         self,
-        positions: torch.Tensor,
+        old_positions: torch.Tensor,
+        new_positions: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -162,12 +163,16 @@ class RotaryEmbedding(CustomOp):
         # ops.rotary_embedding()/batched_rotary_embedding()
         # are in-place operations that update the query and key tensors.
         if offsets is not None:
-            ops.batched_rotary_embedding(positions, key, self.head_size,
+            ops.batched_rotary_embedding(old_positions,
+                                         new_positions, 
+                                         key, self.head_size,
                                          self.cos_sin_cache,
                                          self.is_neox_style, self.rotary_dim,
                                          offsets)
         else:
-            lmc_ops.rotary_embedding_k(positions, key, self.head_size,
+            lmc_ops.rotary_embedding_k_fused(old_positions, 
+                                       new_positions,
+                                       key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
         return key
 

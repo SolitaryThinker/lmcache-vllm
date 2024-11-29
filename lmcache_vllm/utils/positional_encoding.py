@@ -41,11 +41,20 @@ class BasicReverseRope:
         k = self.rope(positions, k)
         return k
 
-    def __call__(self, positions, k, is_reverse=True):
+    # TODO(Jiayi): fuse the kernels together
+    def reverse_encode_then_encode(self, old_positions, new_positions, k):
+        k = self.rope(old_positions, new_positions, k)
+        return k
+    
+    def __call__(self, old_positions, new_positions,
+                 k, is_reverse=True, is_fuse=False):
         if is_reverse:
-            return self.reverse_encode(positions, k)
+            return self.reverse_encode(old_positions, k)
+        elif is_fuse:
+            return self.reverse_encode_then_encode(
+                old_positions, new_positions, k)
         else:
-            return self.encode(positions, k)
+            return self.encode(new_positions, k)
 
 def validate_rope_params(
         head_size: int,
