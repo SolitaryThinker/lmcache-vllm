@@ -206,12 +206,12 @@ if triton.__version__ >= "2.1.0":
         # block_mask is 0 when we're already past the current query length
         block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
 
-        # off_p = (
-        #     cur_batch * stride_pbs +  # batch index
-        #     cur_head * stride_ph +    # head index
-        #     offs_m[:, None] * stride_pm +  # query position
-        #     offs_m[None, :] * stride_pn    # key position
-        # )
+        # Lift loop invariants before the loop
+        base_off_p = (
+            cur_batch * stride_pbs +  # batch index
+            cur_head * stride_ph +    # head index
+            offs_m[:, None] * stride_pm  # query position
+        )
 
         # compute query against itself (with causal mask)
         for start_n in range(0, block_mask * (start_m + 1) * BLOCK_M, BLOCK_N):
@@ -233,26 +233,23 @@ if triton.__version__ >= "2.1.0":
                 qk = tl.where(
                     offs_m[:, None] -
                     (start_n + offs_n[None, :]) < SLIDING_WINDOW, qk, -10000)
-
-            # qk_casted = qk.to(QK_Out.dtype)
-            # qk_casted = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk_casted,
-            #               float("-inf"))
-            off_p = (
-                cur_batch * stride_pbs +  # batch index
-                cur_head * stride_ph +    # head index
-                offs_m[:, None] * stride_pm +  # query position
-                (start_n + offs_n[None, :]) * stride_pn    # key position
-            )
+            
+            off_p = base_off_p + (start_n + offs_n[None, :]) * stride_pn
             # Remove debug print
             # tl.device_print(off_p)
             
             # Add mask for valid positions:
             # 1. Query positions must be within current batch query length
             # 2. Key positions must be within current batch query length
+            qk_casted = qk.to(q.dtype)
             tl.store(QK_Out + off_p, 
-                    qk,
+                    qk_casted,
                     mask=(offs_m[:, None] < cur_batch_query_len) & 
                          ((start_n + offs_n[None, :]) < cur_batch_query_len))
+
+            # qk_casted = qk.to(QK_Out.dtype)
+            # qk_casted = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk_casted,
+            #               float("-inf"))
 
             # -- compute m_ij, p, l_ij
             m_ij = tl.max(qk, 1)
@@ -469,7 +466,8 @@ def forward_prefix_expose(
     # Store raw logits instead of probabilities
     raw_qk = torch.empty(
         (seq_lens_tensor.shape[0], query.shape[1], max_query_len, max_query_len),
-        dtype=torch.float32,  # Always use float32 for logits
+        # dtype=torch.float32,  # Always use float32 for logits
+        dtype=query.dtype,
         device=value.device
     )
 
