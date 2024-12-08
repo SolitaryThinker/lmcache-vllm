@@ -196,7 +196,7 @@ def xformers_forward_compact(
             # logger.info('------------------------prefill_meta:')
             # for k, v in prefill_meta.__dict__.items():
             #     logger.info(f"\t{k}: {v}")
-            out, probabilities = forward_prefix_expose(
+            out, raw_qk = forward_prefix_expose(
                 query,
                 key,
                 value,
@@ -215,9 +215,11 @@ def xformers_forward_compact(
             )
             print('=layer=')
             torch.set_printoptions(profile='full')
-            print(probabilities[0][10])
-            print(probabilities[0][10].shape)
-            print(probabilities.shape)
+            # for head in probabilities[0]:
+            #     print(head[13])
+            print(raw_qk[0][10])
+            print(raw_qk[0][10].shape)
+            print(raw_qk.shape)
 
             # out = PagedAttention.forward_prefix(
             #     query,

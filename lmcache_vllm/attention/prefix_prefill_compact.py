@@ -15,7 +15,7 @@ if triton.__version__ >= "2.1.0":
         Q,
         K,
         V,
-        P,
+        QK_Out,
         K_cache,
         V_cache,
         B_Loc,
@@ -104,8 +104,8 @@ if triton.__version__ >= "2.1.0":
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32)  # [M]
         acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED],
                        dtype=tl.float32)  # [M,D]
-        acc_p = tl.zeros([BLOCK_M, BLOCK_N],
-                       dtype=q.dtype)  # [M,N]
+        # acc_p = tl.zeros([BLOCK_M, BLOCK_N],
+        #                dtype=q.dtype)  # [M,N]
 
         # compute query against context (no causal mask here)
         for start_n in range(0, cur_batch_ctx_len, BLOCK_N):
@@ -176,7 +176,7 @@ if triton.__version__ >= "2.1.0":
             # scale acc
             acc_scale = l_i / l_i_new * alpha
             acc = acc * acc_scale[:, None]
-            acc_p = acc_p * (acc_scale[:, None]).to(acc_p.dtype)
+            # acc_p = acc_p * (acc_scale[:, None]).to(acc_p.dtype)
             # update acc
             v_load = tl.load(V_cache + off_v,
                              mask=dim_mask[None, :] &
@@ -186,8 +186,8 @@ if triton.__version__ >= "2.1.0":
                 v = (v_load.to(tl.float32) * v_scale).to(q.dtype)
             else:
                 v = v_load
-            p = p.to(acc_p.dtype)
-            acc_p += p
+            # p_casted = p.to(acc_p.dtype)
+            # acc_p += p_casted
             p = p.to(v.dtype)
 
             acc += tl.dot(p, v)
@@ -205,6 +205,13 @@ if triton.__version__ >= "2.1.0":
 
         # block_mask is 0 when we're already past the current query length
         block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
+
+        # off_p = (
+        #     cur_batch * stride_pbs +  # batch index
+        #     cur_head * stride_ph +    # head index
+        #     offs_m[:, None] * stride_pm +  # query position
+        #     offs_m[None, :] * stride_pn    # key position
+        # )
 
         # compute query against itself (with causal mask)
         for start_n in range(0, block_mask * (start_m + 1) * BLOCK_M, BLOCK_N):
@@ -227,6 +234,26 @@ if triton.__version__ >= "2.1.0":
                     offs_m[:, None] -
                     (start_n + offs_n[None, :]) < SLIDING_WINDOW, qk, -10000)
 
+            # qk_casted = qk.to(QK_Out.dtype)
+            # qk_casted = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk_casted,
+            #               float("-inf"))
+            off_p = (
+                cur_batch * stride_pbs +  # batch index
+                cur_head * stride_ph +    # head index
+                offs_m[:, None] * stride_pm +  # query position
+                (start_n + offs_n[None, :]) * stride_pn    # key position
+            )
+            # Remove debug print
+            # tl.device_print(off_p)
+            
+            # Add mask for valid positions:
+            # 1. Query positions must be within current batch query length
+            # 2. Key positions must be within current batch query length
+            tl.store(QK_Out + off_p, 
+                    qk,
+                    mask=(offs_m[:, None] < cur_batch_query_len) & 
+                         ((start_n + offs_n[None, :]) < cur_batch_query_len))
+
             # -- compute m_ij, p, l_ij
             m_ij = tl.max(qk, 1)
             p = tl.exp(qk - m_ij[:, None])
@@ -246,7 +273,7 @@ if triton.__version__ >= "2.1.0":
             acc_scale = l_i / l_i_new * alpha
             acc = acc * acc_scale[:, None]
             # acc_p = acc_p * acc_scale[:, None]
-            acc_p = acc_p * (acc_scale[:, None]).to(acc_p.dtype)
+            # acc_p = acc_p * (acc_scale[:, None]).to(acc_p.dtype)
             # update acc
             v = tl.load(v_ptrs +
                         (cur_batch_in_all_start_index + start_n) * stride_vbs,
@@ -256,9 +283,11 @@ if triton.__version__ >= "2.1.0":
             p = p.to(v.dtype)
 
             acc += tl.dot(p, v)
-            p_casted = p.to(acc_p.dtype)
+                    # mask=(start_n + offs_n[None, :]) < cur_batch_query_len)
+            # tl.store(P + off_p, p_casted)
+            # p_casted = p.to(acc_p.dtype)
             # p_masked = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), p_casted, -1.0)
-            acc_p += p_casted
+            # acc_p += p_casted
             # p = p.to(acc_p.dtype)
             # acc_p += p
             # update m_i and l_i
@@ -268,24 +297,24 @@ if triton.__version__ >= "2.1.0":
         off_o = (
             (cur_batch_in_all_start_index + offs_m[:, None]) * stride_obs +
             cur_head * stride_oh + offs_d[None, :] * stride_od)
-        off_p = (
-            cur_batch * stride_pbs +  # batch index
-            cur_head * stride_ph +    # head index
-            offs_m[:, None] * stride_pm +  # query position
-            offs_m[None, :] * stride_pn    # key position
-        )
+        # off_p = (
+        #     cur_batch * stride_pbs +  # batch index
+        #     cur_head * stride_ph +    # head index
+        #     offs_m[:, None] * stride_pm +  # query position
+        #     offs_m[None, :] * stride_pn    # key position
+        # )
         out_ptrs = Out + off_o
-        p_ptrs = P + off_p
+        # p_ptrs = P + off_p
         
         # Store output with head_dim mask
         tl.store(out_ptrs,
                  acc,
                  mask=dim_mask[None, :] &
                  (offs_m[:, None] < cur_batch_query_len))
-        # Store attention pattern with seq_len mask
-        tl.store(p_ptrs,
-                 acc_p,
-                 mask=(offs_m[:, None] < cur_batch_query_len))
+        # Store attention pattern with seq_len mask AND causal mask
+        # tl.store(p_ptrs,
+        #          acc_p,
+        #          mask=(offs_m[:, None] < cur_batch_query_len))
         return
 
     @torch.inference_mode()
@@ -347,7 +376,8 @@ if triton.__version__ >= "2.1.0":
         batch, head = b_seq_len.shape[0], q.shape[1]
         num_queries_per_kv = q.shape[1] // k.shape[1]
 
-        grid = (batch, head, triton.cdiv(max_input_len, BLOCK))  # batch, head,
+        num_blocks = triton.cdiv(max_input_len, BLOCK)
+        grid = (batch, head, num_blocks)  # batch, head,
 
         # 0 means "disable"
         if sliding_window is None or sliding_window <= 0:
@@ -436,18 +466,18 @@ def forward_prefix_expose(
     v_scale: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     output = torch.empty_like(query)
-    probabilities = torch.empty((seq_lens_tensor.shape[0], query.shape[1], max_query_len, max_query_len),
-                                # dtype=torch.float32,
-                                dtype=query.dtype,
-                                device=value.device)
-    # print('probabilities dtype', probabilities.dtype)
-    # print('value dtype', value.dtype)
-    # print('query dtype', query.dtype)
+    # Store raw logits instead of probabilities
+    raw_qk = torch.empty(
+        (seq_lens_tensor.shape[0], query.shape[1], max_query_len, max_query_len),
+        dtype=torch.float32,  # Always use float32 for logits
+        device=value.device
+    )
+
     context_attention_fwd(
         query,
         key,
         value,
-        probabilities,
+        raw_qk,
         output,
         kv_cache_dtype,
         key_cache,
@@ -463,4 +493,35 @@ def forward_prefix_expose(
         alibi_slopes,
         sliding_window,
     )
-    return output, probabilities
+
+    # Post-process raw_qk into attention probabilities
+    # Apply softmax row-wise
+    # attention_probs = torch.nn.functional.softmax(raw_qk, dim=-1)
+    
+    return output, raw_qk
+
+def convert_logits_to_probs(
+    raw_qk: torch.Tensor,
+    seq_lens_tensor: torch.Tensor,
+    max_query_len: int,
+) -> torch.Tensor:
+    """Convert raw QK logits to proper attention probabilities with masking."""
+    batch_size = raw_qk.shape[0]
+    num_heads = raw_qk.shape[1]
+    
+    # Create causal mask
+    mask = torch.arange(max_query_len, device=raw_qk.device)[None, :] <= \
+           torch.arange(max_query_len, device=raw_qk.device)[:, None]
+    
+    # Apply masks
+    raw_qk = raw_qk.masked_fill(~mask, float('-inf'))
+    
+    # Apply sequence length mask
+    seq_mask = torch.arange(max_query_len, device=raw_qk.device)[None, :] < \
+               seq_lens_tensor[:, None]
+    raw_qk = raw_qk.masked_fill(~seq_mask[:, None, None, :], float('-inf'))
+    
+    # Apply softmax
+    probs = torch.nn.functional.softmax(raw_qk, dim=-1)
+    
+    return probs
